@@ -75,6 +75,8 @@
 
 #ifdef __ARM_NEON // (M1)
 #include "sse2neon.h"
+#elif defined(__lvx__) // LVX, through SIMDe's SSE2 (see README-LVX.md)
+#include <simde/x86/sse2.h>
 #else // x86 (Intel)
 #include <emmintrin.h>
 #endif
