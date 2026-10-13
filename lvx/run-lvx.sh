@@ -44,4 +44,4 @@ echo "== $MARCH -$OPT =="
 LVX_CPU=${LVX_CPU:-minor} timeout ${TMO:-900} \
 	"$CSW/lvx-gem5/build/$GEM5BIN" --outdir="$WD/m5out" \
 	"$CSW/lvx-gem5/tests/lvx/run_lvx.py" "$WD/ssw.elf" 2>&1 |
-	grep -E "^checksum|^alignments|^acc|^cycles|^ok|^FAIL|^MISMATCH|target exited"
+	grep -E "^checksum|^queries|^ref_len|^cells|^cycles|^acc|^alignments|^acc|^cycles|^ok|^FAIL|^MISMATCH|target exited"
