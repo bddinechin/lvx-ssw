@@ -95,11 +95,16 @@ size_t strlen (const char *s)
 static char impure_blob[512] __attribute__((aligned (8)));
 void *_impure_ptr = impure_blob;
 
-/* SSW only uses fprintf on its error paths; reaching one is a failure, so
-   print the fact and stop rather than implement formatting. */
+/* A silent no-op, and not a trap.  This used to die on the assumption that SSW
+   only writes to stderr when something has gone wrong -- untrue: it warns
+   there, legitimately, when the byte profile cannot represent the score and it
+   is falling back ("Please set 2 to the score_size parameter"), which is
+   exactly what a long similar query provokes.  Trapping turned the library
+   working as designed into a benchmark failure.  Formatting is not implemented
+   because nothing here needs to read the text; the driver's own invariant check
+   reports what matters. */
 int fprintf (void *stream, const char *fmt, ...)
 {
 	(void) stream; (void) fmt;
-	die ("FAIL: ssw reached an fprintf error path\n");
 	return 0;
 }

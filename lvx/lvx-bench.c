@@ -67,7 +67,9 @@ static void tables_init (void)
 }
 
 static int8_t refnum[SSW_REF_LEN];
-static int8_t qrynum[SSW_NQUERY][64];
+/* sized from the data, not a guess: QLEN mode makes queries far longer
+   than the 54-base reads, and a fixed 64 would silently overrun. */
+static int8_t qrynum[SSW_NQUERY][SSW_MAX_QLEN];
 
 static void encode_all (void)
 {
@@ -148,7 +150,16 @@ int main (void)
 			if (a) align_destroy (a);
 			init_destroy (p);
 		}
-		if (s[0] != s[1] || s[1] != s[2]) {
+		/* The byte profile is only APPLICABLE while the optimal score
+		   fits in 255 -- a long, similar query scores far above that,
+		   and ssw_align then refuses it (returning NULL, which is the
+		   0xffff sentinel here) rather than returning a wrong answer.
+		   That is the library working, not a mismatch, so the invariant
+		   is: word and adaptive always agree, and byte agrees too
+		   whenever it was applicable.  Requiring all three
+		   unconditionally made a 500-base query look like a failure. */
+		int byte_ok = (s[0] != 0xffff);
+		if (s[1] != s[2] || (byte_ok && s[0] != s[1])) {
 			putnum ("MISMATCH query ", q);
 			putnum ("  byte ", s[0]);
 			putnum ("  word ", s[1]);
@@ -156,6 +167,8 @@ int main (void)
 			puts_ ("FAIL: profiles disagree\n");
 			return 1;
 		}
+		if (!byte_ok && q == 0)
+			puts_ ("note: byte profile not applicable (score > 255), word path timed\n");
 		checksum = checksum * 131 + s[1];
 	}
 	putnum ("checksum ", checksum);
