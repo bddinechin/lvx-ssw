@@ -5,6 +5,16 @@
 #   MARCH=lvx-1 ./run-lvx.sh  the scalar core
 #   OPT=O3 ./run-lvx.sh
 #   ./run-lvx.sh --native     the x86 oracle, same source, native SSE2
+#   BENCH=inter ./run-lvx.sh  the inter-sequence kernel instead of striped
+#
+# BENCH selects which of the two Smith-Waterman shapes to measure:
+#   striped (default)  lvx-bench.c over upstream src/ssw.c -- Farrar striped,
+#                      one query across sixteen strided lanes, with the lazy-F
+#                      fix-up loop and its data-dependent early exit.
+#   inter              lvx-inter.c -- Rognes/SWIPE inter-sequence, sixteen
+#                      independent database sequences, no lazy-F, no branch in
+#                      the inner loop.
+# They measure different things on purpose; see the header of lvx-inter.c.
 set -u
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 # --- Locating lvx-csw ------------------------------------------------------
@@ -111,12 +121,25 @@ export LVX_CSW="$CSW"
 # --- end locating lvx-csw --------------------------------------------------
 MARCH=${MARCH:-lvx-2}
 OPT=${OPT:-O2}
+BENCH=${BENCH:-striped}
+case $BENCH in
+    striped) SRCS="$HERE/lvx/lvx-bench.c $HERE/src/ssw.c $HERE/lvx/lvx-shim.c" ;;
+    # lvx-inter.c is self-contained: its own kernel, its own scalar oracle, and
+    # no upstream ssw.c, so it needs no allocator shim either -- every buffer
+    # is static.  That is why lvx-shim.c is absent here rather than forgotten.
+    inter)   SRCS="$HERE/lvx/lvx-inter.c" ;;
+    *) echo "error: unknown BENCH='$BENCH' (expected striped or inter)" >&2; exit 2 ;;
+esac
 SIMDE=$CSW/lvx-simde
 
 if [ "${1:-}" = "--native" ]; then
-	cc -$OPT -I"$HERE/src" -I"$SIMDE" -o /tmp/ssw-native \
-	   "$HERE/lvx/lvx-bench.c" "$HERE/src/ssw.c" -lm || exit 1
-	exec /tmp/ssw-native t
+	case $BENCH in
+		striped) nsrc="$HERE/lvx/lvx-bench.c $HERE/src/ssw.c" ;;
+		inter)   nsrc="$HERE/lvx/lvx-inter.c" ;;
+	esac
+	# shellcheck disable=SC2086
+	cc -$OPT -I"$HERE/src" -I"$SIMDE" -o /tmp/ssw-native-$BENCH $nsrc -lm || exit 1
+	exec /tmp/ssw-native-$BENCH t
 fi
 
 BIN=$CSW/lvx-toolchain/bin
@@ -141,7 +164,7 @@ case $MARCH in
     # worse, default to a core that does not match the code.
     *) echo "error: unknown MARCH='$MARCH' (expected lvx-1 or lvx-2)" >&2; exit 2 ;;
 esac
-[ -x "$CSW/lvx-gem5/build/$GEM5BIN" ] || {
+[ "${STATIC_ONLY:-0}" = 1 ] || [ -x "$CSW/lvx-gem5/build/$GEM5BIN" ] || {
     echo "error: missing ISS for $MARCH: $CSW/lvx-gem5/build/$GEM5BIN" >&2
     echo "       (lvx-csw from $csw_from) -- build it in lvx-gem5" >&2
     exit 2
@@ -152,22 +175,43 @@ WD=$(mktemp -d); trap 'rm -rf "$WD"' EXIT
 # driver writes through crt.S's sys_write -- but SSW itself calls malloc/calloc
 # and memset, so link newlib's libc for those.
 CF="-$OPT -march=$MARCH -I$HERE/src -I$SIMDE -DSIMDE_ENABLE_NATIVE_ALIASES -ffreestanding -fno-strict-aliasing"
-for src in "$HERE/lvx/lvx-bench.c" "$HERE/src/ssw.c" "$HERE/lvx/lvx-shim.c"; do
+objs=""
+for src in $SRCS; do
 	o=$WD/$(basename "$src" .c).o
 	"$BIN/lvx-mbr-gcc" $CF -c "$src" -o "$o" || { echo "COMPILE FAIL: $src"; exit 1; }
+	objs="$objs $o"
 done
 "$BIN/lvx-mbr-as" -march="$MARCH" "$CSW/validation/lib/crt.S" -o "$WD/crt.o" || exit 1
 "$BIN/lvx-mbr-gcc" -march="$MARCH" -nostartfiles -nostdlib \
 	-Wl,-e,_start -Wl,-Ttext=0x10000 \
-	"$WD/crt.o" "$WD"/lvx-bench.o "$WD"/ssw.o "$WD"/lvx-shim.o -lgcc -o "$WD/ssw.elf" \
+	"$WD/crt.o" $objs -lgcc -o "$WD/ssw.elf" \
 	|| { echo "LINK FAIL"; exit 1; }
 
-echo "== $MARCH -$OPT =="
+echo "== $BENCH $MARCH -$OPT =="
+
+# Static metrics, in the same key-value shape as the driver's own output so a
+# caller parses ONE stream.  Counted exactly as lvx-polybench's harness counts
+# them, so a number here means the same thing as a number there: instructions
+# are disassembly lines, bundles are `;;' stops, and SIMD instructions are
+# recognised by their lane-shape suffix (dp=2x64, wq=4x32, ho=8x16, bx=16x8 --
+# all 128 bits, the letter being the lane width).
+"$BIN/lvx-mbr-objdump" -d "$WD/ssw.elf" > "$WD/dis.txt" 2>/dev/null
+echo "text_bytes $("$BIN/lvx-mbr-size" -A "$WD/ssw.elf" | awk '$1==".text"{print $2}')"
+echo "insns_static $(grep -cE '^[[:space:]]+[0-9a-f]+:' "$WD/dis.txt")"
+echo "bundles_static $(grep -c ';;' "$WD/dis.txt")"
+echo "simd_insns $(grep -coE '\b[a-z]+(dp|wq|ho|bx)\b' "$WD/dis.txt" || true)"
 "$BIN/lvx-mbr-objdump" -d "$WD/ssw.elf" | awk '
   match($0, /\<(maxu?(bx|ho)|addu?s(bx|ho)|sbfu?s(bx|ho)|srlq|sllq|compbx|splat[bhwd]q)\>/) {
     m = substr($0, RSTART, RLENGTH); c[m]++ }
   END { printf "   SIMD mnemonics:"; for (k in c) printf " %s=%d", k, c[k]; print "" }'
+# STATIC_ONLY builds and reports static metrics without running the ISS --
+# the quick check that codegen still looks right, and the only mode that works
+# without a built gem5.
+if [ "${STATIC_ONLY:-0}" = 1 ]; then
+	exit 0
+fi
+
 LVX_CPU=${LVX_CPU:-minor} timeout ${TMO:-900} \
 	"$CSW/lvx-gem5/build/$GEM5BIN" --outdir="$WD/m5out" \
 	"$CSW/lvx-gem5/tests/lvx/run_lvx.py" "$WD/ssw.elf" 2>&1 |
-	grep -E "^checksum|^queries|^ref_len|^cells|^cycles|^acc|^alignments|^acc|^cycles|^ok|^FAIL|^MISMATCH|target exited"
+	grep -E "^checksum|^queries|^ref_len|^sequences|^db_len|^query_len|^lanes|^cells|^cycles|^acc|^alignments|^ok|^note|^FAIL|^MISMATCH|^OVERFLOW|target exited"
