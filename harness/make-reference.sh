@@ -29,13 +29,17 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' 0 1 2 3 15
 } > "$tmp/out"
 
 rc=0
-for bench in striped inter; do
+for bench in striped inter inter-gather; do
+    cf=""
     case $bench in
-        striped) src="$repo/lvx/lvx-bench.c $repo/src/ssw.c" ;;
-        inter)   src="$repo/lvx/lvx-inter.c" ;;
+        striped)      src="$repo/lvx/lvx-bench.c $repo/src/ssw.c" ;;
+        inter)        src="$repo/lvx/lvx-inter.c" ;;
+        # -mssse3 because _mm_shuffle_epi8 is SSSE3 and x86-64's baseline is
+        # SSE2; the LVX build needs no equivalent, SIMDe supplies it.
+        inter-gather) src="$repo/lvx/lvx-inter.c"; cf="-DISB_GATHER -mssse3" ;;
     esac
     # shellcheck disable=SC2086
-    cc -O2 -I"$repo/src" -o "$tmp/$bench" $src -lm || { echo "native build failed: $bench" >&2; rc=1; continue; }
+    cc -O2 $cf -I"$repo/src" -o "$tmp/$bench" $src -lm || { echo "native build failed: $bench" >&2; rc=1; continue; }
     cks=$("$tmp/$bench" t 2>/dev/null | sed -n 's/^checksum \(.*\)$/\1/p' | tail -1)
     if [ -z "$cks" ]; then
         echo "no checksum from the native $bench run -- did its self-check fail?" >&2
@@ -44,6 +48,18 @@ for bench in striped inter; do
     printf '%s\t%s\n' "$bench" "$cks" >> "$tmp/out"
     printf '%-10s %s\n' "$bench" "$cks"
 done
+
+# inter and inter-gather are the same algorithm fetching scores two ways, so
+# their checksums MUST match.  If they do not, the gather is wrong and no
+# reference should be written from it -- that is the whole correctness argument
+# for the variant, and it is cheap to assert here.
+ci=$(awk -F'\t' '$1=="inter"{print $2}' "$tmp/out")
+cg=$(awk -F'\t' '$1=="inter-gather"{print $2}' "$tmp/out")
+if [ -n "$ci" ] && [ -n "$cg" ] && [ "$ci" != "$cg" ]; then
+    echo "inter ($ci) and inter-gather ($cg) disagree -- the gather computes" >&2
+    echo "different scores from the profile build.  Not writing $out." >&2
+    exit 1
+fi
 
 [ "$rc" = 0 ] || { echo "not writing $out" >&2; exit 1; }
 mv "$tmp/out" "$out"

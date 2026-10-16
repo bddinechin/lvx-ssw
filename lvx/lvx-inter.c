@@ -35,17 +35,43 @@
  *
  * TWO DELIBERATE DEPARTURES FROM SWIMM, both measured rather than assumed:
  *
- *   1. NO _mm_shuffle_epi8.  SWIMM gathers each lane's substitution score with
- *      PSHUFB over a 16-byte score row.  Measured on this toolchain
- *      (2026-10-16, lvx-gcc 127ff2d12aa) _mm_shuffle_epi8 lowers to 22
- *      instructions -- SIMDe's portable path, since LVX has only structured
- *      permutes (vector.md's UZP/ZIP-style shuffles and
- *      lvx_expand_vec_perm_shuffle), not a runtime-indexed byte gather.  A
- *      kernel built on it would measure emulation, not the ISA.  So this uses
- *      the DATABASE SCORE PROFILE instead: dbprof[j][sym] is precomputed, and
- *      the inner loop does a plain aligned load indexed by the query residue.
- *      That is not a workaround invented here -- it is SWIMM's own `-p S'
- *      Score Profile mode, as against `-p Q' Query Profile.
+ *   1. THE SCORE GATHER IS A COMPILE-TIME VARIANT, and measuring both is the
+ *      point.  SWIMM fetches each lane's substitution score with PSHUFB over a
+ *      16-byte score row; measured on this toolchain (2026-10-16, lvx-gcc
+ *      127ff2d12aa) _mm_shuffle_epi8 lowers to 22 instructions -- SIMDe's
+ *      portable path, since LVX has only structured permutes (vector.md's
+ *      UZP/ZIP-style shuffles and lvx_expand_vec_perm_shuffle) and no
+ *      runtime-indexed byte gather.
+ *
+ *      So there are two builds of this one kernel, identical in every other
+ *      respect -- same data, same scores, same oracle, same cell count, same
+ *      recurrence:
+ *
+ *        default        DATABASE SCORE PROFILE.  dbprof[j][sym] is precomputed
+ *                       outside the timed region and the inner loop does a
+ *                       plain aligned load indexed by the query residue.  This
+ *                       is SWIMM's own `-p S' Score Profile mode (against
+ *                       `-p Q' Query Profile), not a workaround invented here.
+ *        -DISB_GATHER   ON-THE-FLY GATHER.  No profile at all; one
+ *                       _mm_shuffle_epi8 per cell-vector in the innermost
+ *                       loop, indexing the query residue's score row by the
+ *                       sixteen lanes' database residues.
+ *
+ *      The difference between the two cycles-per-cell figures is therefore the
+ *      cost of PSHUFB on this ISA, in a real kernel, with everything else held
+ *      constant -- which is worth more than the microbenchmark number because
+ *      it is per-cell rather than per-instruction, and it is a standing gate:
+ *      if a byte-permute is ever added to the ISA, or SIMDe gains an LVX path,
+ *      the gap closes and the series shows it.
+ *
+ *      Both builds MUST produce the same checksum.  That is not a coincidence
+ *      to be noted, it is the correctness argument for the gather: it computes
+ *      the same scores or it does not agree, and harness/run.sh gates on it.
+ *
+ *      The gather also has the smaller working set -- a 16-byte score row per
+ *      query symbol plus one residue vector per database position, against the
+ *      profile's DBLEN * ALPHA vectors per block -- so on a machine where the
+ *      permute is cheap it is the better algorithm, not merely the equal one.
  *
  *   2. UNSIGNED saturating bytes, not signed.  Measured the same day:
  *      _mm_adds_epu8 / _mm_subs_epu8 / _mm_max_epu8 are 2 instructions each
@@ -88,9 +114,17 @@
 #include "lvx-io.h"
 
 #if defined(__lvx__)
-#include <simde/x86/sse2.h>
+#  if defined(ISB_GATHER)
+#    include <simde/x86/ssse3.h>   /* _mm_shuffle_epi8 is SSSE3, not SSE2 */
+#  else
+#    include <simde/x86/sse2.h>
+#  endif
 #else
-#include <emmintrin.h>
+#  if defined(ISB_GATHER)
+#    include <tmmintrin.h>
+#  else
+#    include <emmintrin.h>
+#  endif
 #endif
 
 /* ---- shape ----------------------------------------------------------------
@@ -181,6 +215,38 @@ static __m128i dbprof[NBLOCK][DBLEN * ALPHA] __attribute__((aligned (16)));
 static __m128i Hrow[DBLEN]                   __attribute__((aligned (16)));
 static __m128i Erow[DBLEN]                   __attribute__((aligned (16)));
 
+#if defined(ISB_GATHER)
+/* The gather needs no score profile: just the database transposed (lane L of
+ * dbcol[b][j] is sequence L's residue at position j) and one 16-byte score row
+ * per query symbol, biased like the profile's entries.  4 KB and 80 bytes
+ * against the profile's 20 KB.
+ *
+ * PSHUFB semantics are what make this exact: _mm_shuffle_epi8(row, idx) yields
+ * row[idx[L] & 15] per lane, so indexing a query symbol's row by the lanes'
+ * residues IS the per-lane substitution score, in one operation.  Residues are
+ * 0..4 and the row is 16 wide, so no index can alias and the high-bit-zeroing
+ * rule never comes into play. */
+static __m128i dbcol[NBLOCK][DBLEN] __attribute__((aligned (16)));
+static __m128i srow[ALPHA]          __attribute__((aligned (16)));
+
+static void build_gather_tables (void)
+{
+	for (int sym = 0; sym < ALPHA; sym++) {
+		int8_t v[LANES];
+		for (int r = 0; r < LANES; r++)
+			v[r] = (int8_t) ((r < ALPHA ? score_mat[sym * ALPHA + r] : 0) + BIAS);
+		__builtin_memcpy (&srow[sym], v, LANES);
+	}
+	for (int b = 0; b < NBLOCK; b++)
+		for (int j = 0; j < DBLEN; j++) {
+			int8_t v[LANES];
+			for (int L = 0; L < LANES; L++)
+				v[L] = db[b * LANES + L][j];
+			__builtin_memcpy (&dbcol[b][j], v, LANES);
+		}
+}
+#endif
+
 static void build_profile (int block)
 {
 	for (int j = 0; j < DBLEN; j++) {
@@ -217,12 +283,22 @@ static void kernel_block (int block, unsigned char out[LANES])
 	 * pass, and the loop below has no branch in it.
 	 */
 	for (int i = 0; i < qlen; i++) {
+#if defined(ISB_GATHER)
+		const __m128i vSrow = srow[qnum[i]];
+		const __m128i *dcol = dbcol[block];
+#else
 		const __m128i *prow = &dbprof[block][qnum[i]];
+#endif
 		__m128i diag = zero;             /* H(i-1,-1) */
 		__m128i vF   = zero;             /* F(i,-1) */
 
 		for (int j = 0; j < DBLEN; j++) {
+			/* The ONLY difference between the two builds. */
+#if defined(ISB_GATHER)
+			__m128i vP = _mm_shuffle_epi8 (vSrow, _mm_load_si128 (&dcol[j]));
+#else
 			__m128i vP = _mm_load_si128 (&prow[j * ALPHA]);
+#endif
 			__m128i hd = Hrow[j];        /* H(i-1,j), also next diag */
 			__m128i ep = Erow[j];        /* E(i-1,j) */
 
@@ -288,6 +364,9 @@ int main (void)
 	unsigned char got[NBLOCK][LANES] __attribute__((aligned (16)));
 
 	/* ---- correctness, before any cycle count prints ---- */
+#if defined(ISB_GATHER)
+	build_gather_tables ();
+#endif
 	for (int b = 0; b < NBLOCK; b++) {
 		build_profile (b);
 		kernel_block (b, got[b]);
@@ -335,6 +414,11 @@ int main (void)
 	putnum ("db_len ", DBLEN);
 	putnum ("query_len ", qlen);
 	putnum ("lanes ", LANES);
+#if defined(ISB_GATHER)
+	puts_ ("score_fetch gather\n");
+#else
+	puts_ ("score_fetch profile\n");
+#endif
 	putnum ("acc ", acc);
 	putnum ("cells ", cells);
 	putnum ("cycles ", (long long) cycles);

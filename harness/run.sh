@@ -5,6 +5,7 @@
 #   ARCH=lvx-1 ./harness/run.sh
 #   OPT=O3 ./harness/run.sh
 #   BENCH=inter ./harness/run.sh          # just one of them
+#   BENCH='inter inter-gather' ./harness/run.sh
 #   STATIC_ONLY=1 ./harness/run.sh        # build + static metrics, no ISS
 #   ./harness/run.sh --csw /path/to/lvx-csw
 #   ./harness/compare.sh results/A.tsv results/B.tsv
@@ -41,7 +42,7 @@ repo="$(dirname "$here")"
 ARCH=${ARCH:-lvx-2}
 OPT=${OPT:-O2}
 STATIC_ONLY=${STATIC_ONLY:-0}
-BENCHES=${BENCH:-"striped inter"}
+BENCHES=${BENCH:-"striped inter inter-gather"}
 
 # --csw is not interpreted here; it is passed straight through to run-lvx.sh,
 # which owns the resolution chain.
@@ -75,7 +76,7 @@ field() { sed -n "s/^$2 \(.*\)$/\1/p" "$1" | tail -1; }
 
 rc=0
 for bench in $BENCHES; do
-    case "$bench" in striped|inter) ;; *) echo "unknown BENCH '$bench'" >&2; exit 2 ;; esac
+    case "$bench" in striped|inter|inter-gather) ;; *) echo "unknown BENCH '$bench'" >&2; exit 2 ;; esac
     log="$work/$bench.log"
     if BENCH="$bench" MARCH="$ARCH" OPT="$OPT" STATIC_ONLY="$STATIC_ONLY" \
        "$repo/lvx/run-lvx.sh" "${csw_args[@]+"${csw_args[@]}"}" > "$log" 2>&1
@@ -134,8 +135,11 @@ if [ -f "$tsv" ]; then
     ' "$tsv" >> "$merged"
 fi
 cat "$rows" >> "$merged"
-# Stable order: striped then inter, whatever order they were run in.
-{ head -1 "$merged"; tail -n +2 "$merged" | awk -F'\t' '{o=($1=="striped")?0:1; print o"\t"$0}' | sort -k1,1n | cut -f2-; } > "$tsv"
+# Stable order: striped, inter, inter-gather, whatever order they were run in,
+# so a diff of two TSVs is a diff of numbers rather than of row order.
+{ head -1 "$merged"; tail -n +2 "$merged" \
+    | awk -F'\t' '{o=($1=="striped")?0:($1=="inter")?1:2; print o"\t"$0}' \
+    | sort -k1,1n | cut -f2-; } > "$tsv"
 
 echo
 echo "wrote $tsv"

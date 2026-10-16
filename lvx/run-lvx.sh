@@ -6,6 +6,7 @@
 #   OPT=O3 ./run-lvx.sh
 #   ./run-lvx.sh --native     the x86 oracle, same source, native SSE2
 #   BENCH=inter ./run-lvx.sh  the inter-sequence kernel instead of striped
+#   BENCH=inter-gather ...    the same kernel fetching scores with PSHUFB
 #
 # BENCH selects which of the two Smith-Waterman shapes to measure:
 #   striped (default)  lvx-bench.c over upstream src/ssw.c -- Farrar striped,
@@ -13,7 +14,15 @@
 #                      fix-up loop and its data-dependent early exit.
 #   inter              lvx-inter.c -- Rognes/SWIPE inter-sequence, sixteen
 #                      independent database sequences, no lazy-F, no branch in
-#                      the inner loop.
+#                      the inner loop.  Scores come from a precomputed database
+#                      profile (SWIMM's `-p S').
+#   inter-gather       the SAME kernel, one _mm_shuffle_epi8 per cell-vector
+#                      instead of the profile load.  Identical in every other
+#                      respect, so the difference between the two
+#                      cycles-per-cell figures IS the cost of PSHUFB on this
+#                      ISA -- 22 instructions as of 2026-10-16, since LVX has
+#                      no runtime-indexed byte gather.  Both must produce the
+#                      same checksum.
 # They measure different things on purpose; see the header of lvx-inter.c.
 set -u
 HERE=$(cd "$(dirname "$0")/.." && pwd)
@@ -122,23 +131,30 @@ export LVX_CSW="$CSW"
 MARCH=${MARCH:-lvx-2}
 OPT=${OPT:-O2}
 BENCH=${BENCH:-striped}
+BENCH_CF=""
 case $BENCH in
     striped) SRCS="$HERE/lvx/lvx-bench.c $HERE/src/ssw.c $HERE/lvx/lvx-shim.c" ;;
     # lvx-inter.c is self-contained: its own kernel, its own scalar oracle, and
     # no upstream ssw.c, so it needs no allocator shim either -- every buffer
     # is static.  That is why lvx-shim.c is absent here rather than forgotten.
-    inter)   SRCS="$HERE/lvx/lvx-inter.c" ;;
-    *) echo "error: unknown BENCH='$BENCH' (expected striped or inter)" >&2; exit 2 ;;
+    inter)        SRCS="$HERE/lvx/lvx-inter.c" ;;
+    inter-gather) SRCS="$HERE/lvx/lvx-inter.c"; BENCH_CF="-DISB_GATHER" ;;
+    *) echo "error: unknown BENCH='$BENCH' (expected striped, inter or inter-gather)" >&2; exit 2 ;;
 esac
 SIMDE=$CSW/lvx-simde
 
 if [ "${1:-}" = "--native" ]; then
 	case $BENCH in
 		striped) nsrc="$HERE/lvx/lvx-bench.c $HERE/src/ssw.c" ;;
-		inter)   nsrc="$HERE/lvx/lvx-inter.c" ;;
+		*)       nsrc="$HERE/lvx/lvx-inter.c" ;;
 	esac
+	# -mssse3 only natively, and only for the gather: _mm_shuffle_epi8 is SSSE3
+	# and x86-64's baseline stops at SSE2, so the host cc refuses to inline it
+	# without the flag.  The LVX build needs nothing -- SIMDe provides it.
+	nflags=""
+	[ "$BENCH" = inter-gather ] && nflags="-mssse3"
 	# shellcheck disable=SC2086
-	cc -$OPT -I"$HERE/src" -I"$SIMDE" -o /tmp/ssw-native-$BENCH $nsrc -lm || exit 1
+	cc -$OPT $nflags $BENCH_CF -I"$HERE/src" -I"$SIMDE" -o /tmp/ssw-native-$BENCH $nsrc -lm || exit 1
 	exec /tmp/ssw-native-$BENCH t
 fi
 
@@ -174,7 +190,7 @@ WD=$(mktemp -d); trap 'rm -rf "$WD"' EXIT
 # Freestanding, like validation/: newlib's malloc/printf are not needed -- the
 # driver writes through crt.S's sys_write -- but SSW itself calls malloc/calloc
 # and memset, so link newlib's libc for those.
-CF="-$OPT -march=$MARCH -I$HERE/src -I$SIMDE -DSIMDE_ENABLE_NATIVE_ALIASES -ffreestanding -fno-strict-aliasing"
+CF="-$OPT -march=$MARCH $BENCH_CF -I$HERE/src -I$SIMDE -DSIMDE_ENABLE_NATIVE_ALIASES -ffreestanding -fno-strict-aliasing"
 objs=""
 for src in $SRCS; do
 	o=$WD/$(basename "$src" .c).o
