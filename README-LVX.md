@@ -36,10 +36,14 @@ Tracking, one TSV row per benchmark — this is the usual entry point:
     ./harness/intrinsic-cost.sh        # what an SSE intrinsic costs here
     ARCH=lvx-1 ./harness/run.sh        # the scalar core, for the lowering comparison
     STATIC_ONLY=1 ./harness/run.sh     # build + static metrics, seconds, no ISS
+    COMPILER=clang ./harness/run.sh    # lvx-llvm instead of lvx-gcc
     ./harness/compare.sh results/lvx-2-O2.tsv /path/to/older.tsv
     ./harness/make-reference.sh        # regenerate the committed checksums
 
-It writes `results/<arch>-<opt>.tsv`. Commit the results: the series is the
+It writes `results/<arch>-<opt>.tsv`, or `results/<arch>-clang-<opt>.tsv` under
+`COMPILER=clang` — a separate series. Only the compile is switched: `crt.S` and
+the `-nostdlib` link stay on binutils and lvx-gcc's driver, so the two builds
+differ in exactly one program. Commit the results: the series is the
 point, and `lvx-perf`'s `bin/lvx-perf-import` snapshots them with the toolchain
 revisions that produced them.
 

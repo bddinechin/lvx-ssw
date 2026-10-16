@@ -7,6 +7,7 @@
 #   ./run-lvx.sh --native     the x86 oracle, same source, native SSE2
 #   BENCH=inter ./run-lvx.sh  the inter-sequence kernel instead of striped
 #   BENCH=inter-gather ...    the same kernel fetching scores with PSHUFB
+#   COMPILER=clang ./run-lvx.sh   compile with lvx-llvm instead of lvx-gcc
 #
 # BENCH selects which of the two Smith-Waterman shapes to measure:
 #   striped (default)  lvx-bench.c over upstream src/ssw.c -- Farrar striped,
@@ -159,6 +160,24 @@ if [ "${1:-}" = "--native" ]; then
 fi
 
 BIN=$CSW/lvx-toolchain/bin
+# The core is spelled -march by lvx-gcc and -mcpu by clang, so the flag is
+# chosen here with the compiler, never by a caller.  It mattered: until
+# lvx-llvm d7a03955 (2026-10-16) clang took -march=lvx-2 as an unused argument,
+# warned, and built for its default core -- lvx-1 code, timed as lvx-2.  -march
+# is an alias there now, but -mcpu is clang's own spelling and right on every
+# build.
+#
+# Only the COMPILE is switched.  crt.S is still assembled by lvx-mbr-as and the
+# -nostdlib link still goes through lvx-mbr-gcc: neither is code generation, so
+# neither is what a GCC-vs-clang comparison is about, and keeping them fixed
+# means the two builds differ in exactly one program.
+COMPILER=${COMPILER:-gcc}
+case $COMPILER in
+    gcc)   XCC=$BIN/lvx-mbr-gcc;   CPUFLAG="-march=$MARCH" ;;
+    clang) XCC=$BIN/lvx-mbr-clang; CPUFLAG="-mcpu=$MARCH" ;;
+    *) echo "error: unknown COMPILER='$COMPILER' (expected gcc or clang)" >&2; exit 2 ;;
+esac
+[ -x "$XCC" ] || { echo "error: missing compiler: $XCC  (lvx-csw from $csw_from)" >&2; exit 2; }
 # SIMDe is a cross-project dependency the split created: lvx-simde stays a
 # submodule of lvx-csw while this benchmark compiles through it. Only the LVX
 # build needs it -- ssw.c selects <simde/x86/sse2.h> on __lvx__ and real
@@ -190,11 +209,11 @@ WD=$(mktemp -d); trap 'rm -rf "$WD"' EXIT
 # Freestanding, like validation/: newlib's malloc/printf are not needed -- the
 # driver writes through crt.S's sys_write -- but SSW itself calls malloc/calloc
 # and memset, so link newlib's libc for those.
-CF="-$OPT -march=$MARCH $BENCH_CF -I$HERE/src -I$SIMDE -DSIMDE_ENABLE_NATIVE_ALIASES -ffreestanding -fno-strict-aliasing"
+CF="-$OPT $CPUFLAG $BENCH_CF -I$HERE/src -I$SIMDE -DSIMDE_ENABLE_NATIVE_ALIASES -ffreestanding -fno-strict-aliasing"
 objs=""
 for src in $SRCS; do
 	o=$WD/$(basename "$src" .c).o
-	"$BIN/lvx-mbr-gcc" $CF -c "$src" -o "$o" || { echo "COMPILE FAIL: $src"; exit 1; }
+	"$XCC" $CF -c "$src" -o "$o" || { echo "COMPILE FAIL: $src"; exit 1; }
 	objs="$objs $o"
 done
 "$BIN/lvx-mbr-as" -march="$MARCH" "$CSW/validation/lib/crt.S" -o "$WD/crt.o" || exit 1
@@ -203,7 +222,7 @@ done
 	"$WD/crt.o" $objs -lgcc -o "$WD/ssw.elf" \
 	|| { echo "LINK FAIL"; exit 1; }
 
-echo "== $BENCH $MARCH -$OPT =="
+echo "== $BENCH $MARCH -$OPT $COMPILER =="
 
 # Static metrics, in the same key-value shape as the driver's own output so a
 # caller parses ONE stream.  Counted exactly as lvx-polybench's harness counts

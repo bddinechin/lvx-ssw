@@ -7,11 +7,17 @@
 #   BENCH=inter ./harness/run.sh          # just one of them
 #   BENCH='inter inter-gather' ./harness/run.sh
 #   STATIC_ONLY=1 ./harness/run.sh        # build + static metrics, no ISS
+#   COMPILER=clang ./harness/run.sh       # lvx-llvm instead of lvx-gcc
 #   ./harness/run.sh --csw /path/to/lvx-csw
 #   ./harness/compare.sh results/A.tsv results/B.tsv
 #
 # Writes one TSV row per benchmark to results/<arch>-<opt>.tsv and a human
 # summary to stdout.  Commit the results: the series is the point.
+#
+# COMPILER=clang writes results/<arch>-clang-<opt>.tsv instead: the compiler is
+# part of the configuration name, because a GCC row and a clang row of one
+# benchmark are two series, not two samples of one.  GCC stays unmarked so the
+# series that predates clang keeps its name.
 #
 # TWO BENCHMARKS, ONE SUITE.  `striped' and `inter' are both Smith-Waterman and
 # deliberately NOT comparable to each other as a speed contest -- they are
@@ -43,6 +49,12 @@ ARCH=${ARCH:-lvx-2}
 OPT=${OPT:-O2}
 STATIC_ONLY=${STATIC_ONLY:-0}
 BENCHES=${BENCH:-"striped inter inter-gather"}
+COMPILER=${COMPILER:-gcc}
+case "$COMPILER" in
+    gcc)   ctag="" ;;
+    clang) ctag="-clang" ;;
+    *) echo "COMPILER must be gcc or clang (got $COMPILER)" >&2; exit 2 ;;
+esac
 
 # --csw is not interpreted here; it is passed straight through to run-lvx.sh,
 # which owns the resolution chain.
@@ -58,7 +70,7 @@ done
 case "$ARCH" in lvx-1|lvx-2) ;; *) echo "ARCH must be lvx-1 or lvx-2 (got $ARCH)" >&2; exit 2 ;; esac
 
 outdir="$repo/results"; mkdir -p "$outdir"
-tsv="$outdir/$ARCH-$OPT.tsv"
+tsv="$outdir/$ARCH$ctag-$OPT.tsv"
 refs="$here/reference-checksums.tsv"
 work=$(mktemp -d); trap 'rm -rf "$work"' 0 1 2 3 15
 
@@ -78,7 +90,7 @@ rc=0
 for bench in $BENCHES; do
     case "$bench" in striped|inter|inter-gather) ;; *) echo "unknown BENCH '$bench'" >&2; exit 2 ;; esac
     log="$work/$bench.log"
-    if BENCH="$bench" MARCH="$ARCH" OPT="$OPT" STATIC_ONLY="$STATIC_ONLY" \
+    if BENCH="$bench" MARCH="$ARCH" OPT="$OPT" STATIC_ONLY="$STATIC_ONLY" COMPILER="$COMPILER" \
        "$repo/lvx/run-lvx.sh" "${csw_args[@]+"${csw_args[@]}"}" > "$log" 2>&1
     then run_ok=1; else run_ok=0; fi
 
