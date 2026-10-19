@@ -1,4 +1,4 @@
-bench	arch	opt	correct	cycles	cells	cycles_per_cell	cells_per_cycle	checksum	text_bytes	insns_static	bundles_static	simd_insns
-striped	lvx-2	O2	ok	22795458	2002000	11.386	0.087	2265384000	14144	3107	1793	114
-inter	lvx-2	O2	ok	5838388	2048000	2.850	0.350	374781626	2492	490	262	19
-inter-gather	lvx-2	O2	ok	83124305	2048000	40.588	0.024	374781626	2868	561	301	19
+bench	arch	opt	correct	cycles	cells	cycles_per_cell	cells_per_cycle	checksum	text_bytes	insns_static	bundles_static	simd_insns	cpu_model
+striped	lvx-2	O2	ok	22795458	2002000	11.386	0.087	2265384000	14144	3107	1793	114	minor
+inter	lvx-2	O2	ok	5838388	2048000	2.850	0.350	374781626	2492	490	262	19	minor
+inter-gather	lvx-2	O2	ok	83124305	2048000	40.588	0.024	374781626	2868	561	301	19	minor

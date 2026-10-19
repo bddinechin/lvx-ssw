@@ -76,8 +76,20 @@ construction and allocation are hoisted out.
 ### The headline numbers
 
 Cycles per cell update, so both are comparable to published GCUPS figures with
-the clock divided out. Measured 2026-10-16, lvx-2 `-O2`, `LVX_CPU=minor`,
-lvx-gcc `127ff2d12aa`:
+the clock divided out. Measured 2026-10-16, lvx-2 `-O2`, lvx-gcc
+`127ff2d12aa`, **`LVX_CPU=minor`**:
+
+That last part is load-bearing and is now recorded in every row's `cpu_model`
+column rather than left to a default. gem5's default model is **`atomic`**,
+which is *functional*: its "cycles" are not timing at all. This benchmark
+defaults to `minor`, the pipeline model, which is the only reason its
+cycles/cell can be set beside a published GCUPS figure.
+
+`lvx-polybench` and `lvx-mibench` do **not** set `LVX_CPU`, so their committed
+series are atomic and their tracked cycle columns have never been timing
+measurements. Two series taken under different models cannot be compared, and
+that mistake has already been made once in this project — a model switch read
+as a 60–240% regression. The model now travels with the numbers.
 
 | | striped | inter-sequence | inter-gather |
 |---|---|---|---|

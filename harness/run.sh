@@ -74,7 +74,9 @@ tsv="$outdir/$ARCH$ctag-$OPT.tsv"
 refs="$here/reference-checksums.tsv"
 work=$(mktemp -d); trap 'rm -rf "$work"' 0 1 2 3 15
 
-HEADER='bench\tarch\topt\tcorrect\tcycles\tcells\tcycles_per_cell\tcells_per_cycle\tchecksum\ttext_bytes\tinsns_static\tbundles_static\tsimd_insns'
+# cpu_model is APPENDED, not inserted: harness/compare.sh and lvx-perf's tools
+# read earlier columns by position, and inserting would silently shift them.
+HEADER='bench\tarch\topt\tcorrect\tcycles\tcells\tcycles_per_cell\tcells_per_cycle\tchecksum\ttext_bytes\tinsns_static\tbundles_static\tsimd_insns\tcpu_model'
 
 # Rows are collected and merged into $tsv at the end rather than written
 # straight to it.  A BENCH=inter re-run would otherwise open the same path --
@@ -103,6 +105,7 @@ for bench in $BENCHES; do
     insns=$(field "$log" insns_static)
     bund=$(field "$log" bundles_static)
     simd=$(field "$log" simd_insns)
+    cpu=$(field "$log" cpu_model)
 
     # The driver's own verdict comes first: it refuses to print cycles when its
     # self-check fails, so a missing checksum with a FAIL line is that, not a
@@ -123,10 +126,10 @@ for bench in $BENCHES; do
 
     printf '%-10s %-12s %12s %14s %16s %10s %8s\n' \
            "$bench" "$correct" "${cycles:--}" "${cells:--}" "${cpc:--}" "${text:--}" "${simd:--}"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
            "$bench" "$ARCH" "$OPT" "$correct" "${cycles:-}" "${cells:-}" \
            "${cpc:-}" "${cyc_per:-}" "${cks:-}" "${text:-}" "${insns:-}" \
-           "${bund:-}" "${simd:-}" >> "$rows"
+           "${bund:-}" "${simd:-}" "${cpu:-}" >> "$rows"
     # Dump the log only for an actual problem. `static' and `noref' are
     # ordinary states -- a build-only run, and a benchmark with no committed
     # reference checksum yet -- and echoing the whole log for them buries the

@@ -246,7 +246,18 @@ if [ "${STATIC_ONLY:-0}" = 1 ]; then
 	exit 0
 fi
 
-LVX_CPU=${LVX_CPU:-minor} timeout ${TMO:-900} \
+# Report the CPU model, because it is the single biggest determinant of a
+# cycle figure and nothing used to record it. gem5's default is `atomic', a
+# FUNCTIONAL model whose "cycles" are not timing at all; this benchmark
+# deliberately defaults to `minor', the pipeline model, which is what makes its
+# cycles/cell comparable to a published GCUPS number. lvx-polybench and
+# lvx-mibench do NOT set it, so their committed series are atomic -- their
+# tracked cycle columns have never been timing measurements. Two series taken
+# under different models cannot be compared, and that mistake has already been
+# made once, so the model now travels with the numbers.
+LVX_CPU=${LVX_CPU:-minor}
+echo "cpu_model $LVX_CPU"
+LVX_CPU=$LVX_CPU timeout ${TMO:-900} \
 	"$CSW/lvx-gem5/build/$GEM5BIN" --outdir="$WD/m5out" \
 	"$CSW/lvx-gem5/tests/lvx/run_lvx.py" "$WD/ssw.elf" 2>&1 |
 	grep -E "^checksum|^queries|^ref_len|^sequences|^db_len|^query_len|^lanes|^cells|^cycles|^acc|^alignments|^ok|^note|^FAIL|^MISMATCH|^OVERFLOW|target exited"
