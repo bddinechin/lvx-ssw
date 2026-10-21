@@ -8,6 +8,7 @@
 #   BENCH=inter ./run-lvx.sh  the inter-sequence kernel instead of striped
 #   BENCH=inter-gather ...    the same kernel fetching scores with PSHUFB
 #   COMPILER=clang ./run-lvx.sh   compile with lvx-llvm instead of lvx-gcc
+#   TMO=0 MARCH=lvx-1 ./run-lvx.sh   no ISS time limit (default 900 s)
 #
 # BENCH selects which of the two Smith-Waterman shapes to measure:
 #   striped (default)  lvx-bench.c over upstream src/ssw.c -- Farrar striped,
@@ -261,3 +262,12 @@ LVX_CPU=$LVX_CPU timeout ${TMO:-900} \
 	"$CSW/lvx-gem5/build/$GEM5BIN" --outdir="$WD/m5out" \
 	"$CSW/lvx-gem5/tests/lvx/run_lvx.py" "$WD/ssw.elf" 2>&1 |
 	grep -E "^checksum|^queries|^ref_len|^sequences|^db_len|^query_len|^lanes|^cells|^cycles|^acc|^alignments|^ok|^note|^FAIL|^MISMATCH|^OVERFLOW|target exited"
+# A timeout used to look like a run that printed nothing: the grep above drops
+# gem5's last words, and the script exited with grep's status. The striped
+# kernel on lvx-1 under minor outlasts the 900 s default.
+rc=("${PIPESTATUS[@]}")
+if [ "${rc[0]}" = 124 ]; then
+	echo "TIMEOUT: gem5 killed after ${TMO:-900} s, no result -- TMO=0 lifts the limit" >&2
+	exit 124
+fi
+exit "${rc[1]}"
