@@ -74,9 +74,36 @@ tsv="$outdir/$ARCH$ctag-$OPT.tsv"
 refs="$here/reference-checksums.tsv"
 work=$(mktemp -d); trap 'rm -rf "$work"' 0 1 2 3 15
 
+# lvx-perf's bin/lvx-rev-stamp owns the provenance columns, and is called
+# rather than copied -- this suite is MIT, lvx-perf is Apache-2.0 WITH
+# LLVM-exception, and executing a script is not deriving from it. A standalone
+# checkout with no superproject records `unknown' rather than failing.
+#
+# Per row, not per sweep: the hazard is a toolchain reinstalled in place while
+# a sweep is running, which a once-per-sweep stamp cannot show.
+super=$(git -C "$repo" rev-parse --show-superproject-working-tree 2>/dev/null) || super=
+STAMP=
+[ -n "$super" ] && [ -x "$super/bin/lvx-rev-stamp" ] && STAMP="$super/bin/lvx-rev-stamp"
+stamp_cols=(csw_rev gcc_rev gem5_rev cc_mtime)
+stamp_header() {
+    if [ -n "$STAMP" ]; then "$STAMP" --tsv-header
+    else (IFS=$'\t'; printf '%s\n' "${stamp_cols[*]}"); fi
+}
+stamp_row() {
+    if [ -n "$STAMP" ]; then "$STAMP" --tsv-row ${CSW:+--csw "$CSW"}
+    else
+        local u=() c
+        for c in "${stamp_cols[@]}"; do u+=(unknown); done
+        (IFS=$'\t'; printf '%s\n' "${u[*]}")
+    fi
+}
+
 # cpu_model is APPENDED, not inserted: harness/compare.sh and lvx-perf's tools
 # read earlier columns by position, and inserting would silently shift them.
 HEADER='bench\tarch\topt\tcorrect\tcycles\tcells\tcycles_per_cell\tcells_per_cycle\tchecksum\ttext_bytes\tinsns_static\tbundles_static\tsimd_insns\tcpu_model'
+HEADER="$HEADER\t$(stamp_header | sed 's/\t/\\t/g')"
+# The field count the merge below pads carried-over rows up to.
+want_fields=$(printf "$HEADER\n" | awk -F'\t' '{print NF}')
 
 # Rows are collected and merged into $tsv at the end rather than written
 # straight to it.  A BENCH=inter re-run would otherwise open the same path --
@@ -126,10 +153,10 @@ for bench in $BENCHES; do
 
     printf '%-10s %-12s %12s %14s %16s %10s %8s\n' \
            "$bench" "$correct" "${cycles:--}" "${cells:--}" "${cpc:--}" "${text:--}" "${simd:--}"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
            "$bench" "$ARCH" "$OPT" "$correct" "${cycles:-}" "${cells:-}" \
            "${cpc:-}" "${cyc_per:-}" "${cks:-}" "${text:-}" "${insns:-}" \
-           "${bund:-}" "${simd:-}" "${cpu:-}" >> "$rows"
+           "${bund:-}" "${simd:-}" "${cpu:-}" "$(stamp_row)" >> "$rows"
     # Dump the log only for an actual problem. `static' and `noref' are
     # ordinary states -- a build-only run, and a benchmark with no committed
     # reference checksum yet -- and echoing the whole log for them buries the
@@ -144,9 +171,17 @@ done
 merged="$work/merged.tsv"
 printf "$HEADER\n" > "$merged"
 if [ -f "$tsv" ]; then
-    awk -F'\t' -v ab="$(echo $BENCHES | tr ' ' '|')" '
+    awk -F'\t' -v OFS='\t' -v ab="$(echo $BENCHES | tr ' ' '|')" \
+        -v want="$want_fields" '
         NR==1 && $1=="bench" {next}
-        { split(ab, k, "|"); for (i in k) if ($1 == k[i]) next; print }
+        { split(ab, k, "|"); for (i in k) if ($1 == k[i]) next
+          # A row written before the provenance columns existed is shorter
+          # than the header. Pad it, so re-running one benchmark cannot leave
+          # the file ragged -- an empty stamp reads as "not recorded", which
+          # bin/lvx-stamp-check treats as unverifiable rather than as a
+          # disagreement.
+          for (i = NF + 1; i <= want; i++) $i = ""
+          print }
     ' "$tsv" >> "$merged"
 fi
 cat "$rows" >> "$merged"
