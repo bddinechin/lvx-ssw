@@ -84,6 +84,23 @@ work=$(mktemp -d); trap 'rm -rf "$work"' 0 1 2 3 15
 super=$(git -C "$repo" rev-parse --show-superproject-working-tree 2>/dev/null) || super=
 STAMP=
 [ -n "$super" ] && [ -x "$super/bin/lvx-rev-stamp" ] && STAMP="$super/bin/lvx-rev-stamp"
+
+# Say up front whether these numbers will be attributable. A sweep here is
+# minutes to hours, and learning afterwards that every row stamped `-dirty'
+# wastes all of it -- which happened three times in two days before this
+# check existed. It WARNS and continues: measuring against your own dirty
+# backend to see whether a change helped is the normal development loop, and
+# bin/lvx-perf-import is the thing that refuses to record it as a series.
+if [ -n "$STAMP" ]; then
+    _cswarg=()
+    [ -n "${CSW:-}" ] && _cswarg=(--csw "$CSW")
+    if ! _q=$("$STAMP" --check ${_cswarg[@]+"${_cswarg[@]}"} 2>&1); then
+        {
+            echo "warning: not provenance-clean -- these rows will not be importable"
+            printf '%s\n' "$_q"
+        } >&2
+    fi
+fi
 stamp_cols=(csw_rev gcc_rev gem5_rev cc_mtime)
 stamp_header() {
     if [ -n "$STAMP" ]; then "$STAMP" --tsv-header
