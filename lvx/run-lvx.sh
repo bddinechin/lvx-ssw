@@ -211,6 +211,18 @@ WD=$(mktemp -d); trap 'rm -rf "$WD"' EXIT
 # driver writes through crt.S's sys_write -- but SSW itself calls malloc/calloc
 # and memset, so link newlib's libc for those.
 CF="-$OPT $CPUFLAG $BENCH_CF -I$HERE/src -I$SIMDE -DSIMDE_ENABLE_NATIVE_ALIASES -ffreestanding -fno-strict-aliasing"
+
+# LVX_EXTRA_CFLAGS: extra flags for the CROSS compile only.
+#
+# It is appended last so it overrides the defaults above, and it is placed
+# here, after the --native branch has already exec'd, so it structurally
+# cannot reach the x86 oracle. That separation is the whole point: an
+# LVX-only flag like -mcms-probe would fail the host build outright, and a
+# flag that silently changed the oracle would invalidate the checksums the
+# oracle exists to provide. lvx-csw's validation/cms/gate.sh hit the mirror
+# of this and had to add a separate GATE_EXTRA knob after a measurement was
+# believed that had tested the default.
+CF="$CF ${LVX_EXTRA_CFLAGS:-}"
 objs=""
 for src in $SRCS; do
 	o=$WD/$(basename "$src" .c).o

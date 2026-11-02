@@ -7,6 +7,8 @@
 #   BENCH=inter ./harness/run.sh          # just one of them
 #   BENCH='inter inter-gather' ./harness/run.sh
 #   STATIC_ONLY=1 ./harness/run.sh        # build + static metrics, no ISS
+#   LVX_EXTRA_CFLAGS='-mcms-probe' ./harness/run.sh   # CROSS-only extra flags
+#                                         (never reaches the x86 oracle)
 #   COMPILER=clang ./harness/run.sh       # lvx-llvm instead of lvx-gcc
 #   ./harness/run.sh --csw /path/to/lvx-csw
 #   ./harness/compare.sh results/A.tsv results/B.tsv
